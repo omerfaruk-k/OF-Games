@@ -1,0 +1,833 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="theme-color" content="#101820">
+<title>SON ÇIKIŞ</title>
+<style>
+*{box-sizing:border-box}
+html,body{
+ margin:0;width:100%;height:100%;overflow:hidden;
+ background:#101820;color:white;font-family:monospace;
+ touch-action:none;user-select:none;-webkit-user-select:none;
+}
+canvas{display:block;width:100%;height:100%;touch-action:none}
+#hud{
+ position:absolute;top:10px;left:10px;right:10px;
+ display:flex;justify-content:space-between;pointer-events:none;
+}
+.panel{
+ background:#101820e8;border:1px solid #65757a;
+ padding:10px;border-radius:8px;font-size:13px;
+}
+#message{
+ position:absolute;top:62px;left:50%;
+ transform:translateX(-50%);
+ background:#101820e8;padding:10px;border-radius:8px;
+ font-size:12px;text-align:center;white-space:nowrap;
+}
+#controls{
+ position:absolute;bottom:18px;left:15px;
+ display:grid;grid-template-columns:58px 58px 58px;
+ grid-template-rows:58px 58px;gap:5px;
+}
+.ctrl{
+ border:2px solid #91a5a9;background:#253a43e8;
+ color:white;border-radius:13px;font-size:25px;
+ display:flex;align-items:center;justify-content:center;
+ touch-action:none;
+}
+.ctrl.active{background:#668995}
+.up{grid-column:2}
+.left{grid-column:1;grid-row:2}
+.down{grid-column:2;grid-row:2}
+.right{grid-column:3;grid-row:2}
+
+#minimap{
+ position:absolute;
+ top:58px;
+ left:50%;
+ transform:translateX(-50%);
+ width:min(230px,62vw);
+ height:125px;
+ background:#101820eF;
+ border:2px solid #82999b;
+ border-radius:10px;
+ overflow:hidden;
+ pointer-events:none;
+ box-shadow:0 3px 15px #0008;
+}
+#mapCanvas{
+ width:100%;
+ height:100%;
+ display:block;
+}
+#mapLegend{
+ position:absolute;
+ top:188px;
+ left:50%;
+ transform:translateX(-50%);
+ display:flex;
+ gap:10px;
+ padding:5px 9px;
+ background:#101820dd;
+ border-radius:7px;
+ font-size:9px;
+ pointer-events:none;
+ white-space:nowrap;
+}
+#start,#end{
+ position:absolute;inset:0;background:#080f13ed;
+ display:flex;align-items:center;justify-content:center;
+ text-align:center;padding:20px;
+}
+#end{display:none}
+.box{
+ width:min(380px,95vw);background:#1b2a30;
+ border:2px solid #60767e;border-radius:15px;padding:25px;
+}
+h1{font-size:35px;letter-spacing:4px;color:#b9dce5}
+button{
+ background:#b9dce5;color:#101820;border:0;
+ border-radius:8px;padding:14px 30px;
+ font:bold 16px monospace;
+}
+</style>
+</head>
+<body>
+
+<canvas id="game"></canvas>
+
+<div id="hud">
+ <div class="panel">🔑 ANAHTAR: <span id="keyCount">0/20</span></div>
+ <div class="panel">👻 HAYALET: <span id="ghostCount">0</span></div>
+</div>
+
+<div id="minimap">
+ <canvas id="mapCanvas"></canvas>
+</div>
+
+<div id="mapLegend">
+ <span>🔵 SEN</span>
+ <span>🟡 ANAHTAR</span>
+ <span>🔴 HAYALET</span>
+</div>
+
+<div id="message">Anahtarları bul!</div>
+
+<div id="controls">
+ <div class="ctrl up" data-dir="up">▲</div>
+ <div class="ctrl left" data-dir="left">◀</div>
+ <div class="ctrl down" data-dir="down">▼</div>
+ <div class="ctrl right" data-dir="right">▶</div>
+</div>
+
+<div id="start">
+ <div class="box">
+  <h1>SON ÇIKIŞ</h1>
+  <p>20 anahtarı bul ve çıkışa ulaş.</p>
+  <p>Her anahtar yeni bir hayalet getirir.</p>
+  <p>Hayaletlere yakalanma!</p>
+  <p>Uzun bir kaçış seni bekliyor...</p>
+  <br>
+  <button onclick="startGame()">OYUNA BAŞLA</button>
+ </div>
+</div>
+
+<div id="end">
+ <div class="box">
+  <h1 id="endTitle">BİTTİ</h1>
+  <p id="endText"></p>
+  <button onclick="startGame()">YENİDEN OYNA</button>
+ </div>
+</div>
+
+<script>
+const canvas=document.getElementById("game");
+const ctx=canvas.getContext("2d");
+
+const mapCanvas=document.getElementById("mapCanvas");
+const mapCtx=mapCanvas.getContext("2d");
+
+let W,H,dpr;
+
+function resize(){
+ dpr=Math.min(window.devicePixelRatio||1,2);
+ W=innerWidth;
+ H=innerHeight;
+
+ canvas.width=Math.round(W*dpr);
+ canvas.height=Math.round(H*dpr);
+
+ const mw=mapCanvas.clientWidth;
+ const mh=mapCanvas.clientHeight;
+
+ mapCanvas.width=Math.round(mw*dpr);
+ mapCanvas.height=Math.round(mh*dpr);
+}
+addEventListener("resize",resize);
+resize();
+
+const WORLD={w:4500,h:3300};
+const TOTAL=20;
+const EXIT_X=WORLD.w/2;
+
+let player,ghosts,items,obstacles;
+let collected=0,playing=false,doorOpen=false;
+let camera={x:0,y:0};
+let last=0;
+
+const controls={
+ up:false,down:false,left:false,right:false
+};
+
+const keyboard={};
+
+function resetControls(){
+ Object.keys(controls).forEach(k=>controls[k]=false);
+ Object.keys(keyboard).forEach(k=>keyboard[k]=false);
+
+ document.querySelectorAll(".ctrl").forEach(b=>{
+  b.classList.remove("active");
+ });
+}
+
+function createWorld(){
+
+ obstacles=[
+ {x:400,y:350,w:200,h:100},
+ {x:900,y:250,w:100,h:250},
+ {x:1500,y:400,w:250,h:100},
+ {x:350,y:1000,w:100,h:250},
+ {x:850,y:1450,w:280,h:100},
+ {x:1500,y:1100,w:100,h:250},
+ {x:2100,y:650,w:250,h:100},
+ {x:2200,y:1500,w:180,h:100},
+ {x:1200,y:850,w:150,h:120},
+ {x:550,y:700,w:100,h:100},
+ {x:1900,y:1000,w:100,h:200},
+ {x:2600,y:1100,w:100,h:300},
+ {x:600,y:1800,w:300,h:80},
+ {x:3100,y:350,w:250,h:100},
+ {x:3700,y:550,w:100,h:250},
+ {x:2900,y:1050,w:300,h:100},
+ {x:3900,y:1200,w:100,h:250},
+ {x:3200,y:1750,w:250,h:100},
+ {x:2700,y:2200,w:100,h:250},
+ {x:3700,y:2450,w:300,h:100},
+ {x:1500,y:2600,w:250,h:100},
+ {x:800,y:2400,w:100,h:250},
+ {x:2100,y:2050,w:100,h:250},
+ {x:1100,y:3000,w:300,h:80},
+ {x:4200,y:1900,w:100,h:200},
+ {x:3200,y:2900,w:250,h:100}
+ ];
+}
+
+function blocked(x,y,r){
+ if(x-r<25||y-r<25||
+    x+r>WORLD.w-25||y+r>WORLD.h-25){
+  return true;
+ }
+
+ for(const o of obstacles){
+  const cx=Math.max(o.x,Math.min(x,o.x+o.w));
+  const cy=Math.max(o.y,Math.min(y,o.y+o.h));
+
+  if(Math.hypot(x-cx,y-cy)<r)return true;
+ }
+
+ return false;
+}
+
+function randomPoint(){
+ for(let i=0;i<3000;i++){
+  const x=100+Math.random()*(WORLD.w-200);
+  const y=150+Math.random()*(WORLD.h-250);
+
+  if(Math.hypot(x-player.x,y-player.y)<350)continue;
+  if(blocked(x,y,30))continue;
+
+  return{x,y};
+ }
+
+ return{x:300,y:300};
+}
+
+function addKey(){
+ const p=randomPoint();
+
+ items.push({
+  x:p.x,
+  y:p.y,
+  phase:Math.random()*10
+ });
+}
+
+function addGhost(){
+ const p=randomPoint();
+
+ const speed=75+Math.floor(collected/5)*12;
+
+ ghosts.push({
+  x:p.x,
+  y:p.y,
+  r:19,
+  speed:speed,
+  phase:Math.random()*10,
+  stuck:0
+ });
+}
+
+function startGame(){
+
+ resetControls();
+ createWorld();
+
+ player={
+  x:1400,
+  y:1100,
+  r:16,
+  speed:250
+ };
+
+ ghosts=[];
+ items=[];
+ collected=0;
+ doorOpen=false;
+ playing=true;
+
+ // Yalnızca ilk anahtar oluşturulur.
+ addKey();
+
+ document.getElementById("start").style.display="none";
+ document.getElementById("end").style.display="none";
+
+ camera.x=Math.max(0,player.x-W/2);
+ camera.y=Math.max(0,player.y-H/2);
+
+ updateHUD();
+ say("20 anahtarı bul! İlk anahtar seni bekliyor.");
+
+ last=performance.now();
+ requestAnimationFrame(loop);
+}
+
+function updateHUD(){
+ document.getElementById("keyCount").textContent=
+ collected+"/"+TOTAL;
+
+ document.getElementById("ghostCount").textContent=
+ ghosts.length;
+}
+
+let messageTimeout;
+
+function say(t){
+ const el=document.getElementById("message");
+ el.textContent=t;
+ el.style.display="block";
+
+ clearTimeout(messageTimeout);
+
+ messageTimeout=setTimeout(()=>{
+  el.style.display="none";
+ },2600);
+}
+
+function movePlayer(dx,dy){
+ const nx=player.x+dx;
+ const ny=player.y+dy;
+
+ if(!blocked(nx,player.y,player.r)){
+  player.x=nx;
+ }
+
+ if(!blocked(player.x,ny,player.r)){
+  player.y=ny;
+ }
+}
+
+function moveGhost(g,dt){
+
+ const dx=player.x-g.x;
+ const dy=player.y-g.y;
+ const d=Math.hypot(dx,dy)||1;
+
+ const vx=dx/d*g.speed*dt;
+ const vy=dy/d*g.speed*dt;
+
+ let moved=false;
+
+ if(!blocked(g.x+vx,g.y,g.r)){
+  g.x+=vx;
+  moved=true;
+ }
+
+ if(!blocked(g.x,g.y+vy,g.r)){
+  g.y+=vy;
+  moved=true;
+ }
+
+ if(!moved){
+
+  g.stuck+=dt;
+
+  const side=g.stuck>1?1:-1;
+
+  const sx=-dy/d*g.speed*dt*side;
+  const sy=dx/d*g.speed*dt*side;
+
+  if(!blocked(g.x+sx,g.y+sy,g.r)){
+   g.x+=sx;
+   g.y+=sy;
+  }
+
+  if(g.stuck>2)g.stuck=0;
+
+ }else{
+  g.stuck=0;
+ }
+}
+
+function update(dt){
+
+ if(!playing)return;
+
+ let dx=0,dy=0;
+
+ if(controls.left||keyboard.a||keyboard.arrowleft)dx--;
+ if(controls.right||keyboard.d||keyboard.arrowright)dx++;
+ if(controls.up||keyboard.w||keyboard.arrowup)dy--;
+ if(controls.down||keyboard.s||keyboard.arrowdown)dy++;
+
+ const len=Math.hypot(dx,dy);
+
+ if(len>0){
+  dx/=len;
+  dy/=len;
+
+  movePlayer(
+   dx*player.speed*dt,
+   dy*player.speed*dt
+  );
+ }
+
+ // ANAHTAR TOPLAMA
+ for(let i=items.length-1;i>=0;i--){
+
+  const k=items[i];
+
+  if(Math.hypot(player.x-k.x,player.y-k.y)<31){
+
+   items.splice(i,1);
+   collected++;
+
+   if(collected<TOTAL){
+
+    // Yeni hayalet doğar.
+    addGhost();
+
+    // Sadece bir sonraki anahtar oluşturulur.
+    addKey();
+
+    if(collected%5===0){
+     say("AŞAMA "+collected+"! HAYALETLER HIZLANDI!");
+    }else{
+     say("ANAHTAR ALINDI! YENİ HAYALET!");
+    }
+
+   }else{
+
+    doorOpen=true;
+    say("20 ANAHTAR TAMAM! ÇIKIŞ AÇILDI!");
+   }
+
+   updateHUD();
+  }
+ }
+
+ // HAYALET HAREKETİ
+ for(const g of ghosts){
+
+  moveGhost(g,dt);
+
+  if(Math.hypot(player.x-g.x,player.y-g.y)<
+     player.r+g.r-3){
+
+   finish(false);
+   return;
+  }
+ }
+
+ // ÇIKIŞ KONTROLÜ
+ if(doorOpen&&
+    Math.hypot(player.x-EXIT_X,player.y-65)<75){
+
+  finish(true);
+  return;
+ }
+
+ camera.x=Math.max(
+  0,
+  Math.min(WORLD.w-W,player.x-W/2)
+ );
+
+ camera.y=Math.max(
+  0,
+  Math.min(WORLD.h-H,player.y-H/2)
+ );
+}
+
+function finish(win){
+
+ playing=false;
+ resetControls();
+
+ document.getElementById("end").style.display="flex";
+
+ document.getElementById("endTitle").textContent=
+  win?"KURTULDUN!":"YAKALANDIN!";
+
+ document.getElementById("endText").textContent=
+  win?
+  "20 anahtarı topladın ve bütün hayaletlerden kurtuldun!":
+  "Hayaletler seni yakaladı. Tekrar dene!";
+}
+
+function drawWorld(){
+
+ ctx.fillStyle="#29382f";
+ ctx.fillRect(0,0,WORLD.w,WORLD.h);
+
+ for(let x=25;x<WORLD.w-25;x+=80){
+  for(let y=25;y<WORLD.h-25;y+=80){
+
+   ctx.fillStyle=
+    ((x/80+y/80)%2===0)?"#2c3c32":"#27362e";
+
+   ctx.fillRect(x,y,78,78);
+  }
+ }
+
+ ctx.fillStyle="#59666a";
+
+ ctx.fillRect(0,0,WORLD.w,25);
+ ctx.fillRect(0,WORLD.h-25,WORLD.w,25);
+ ctx.fillRect(0,0,25,WORLD.h);
+ ctx.fillRect(WORLD.w-25,0,25,WORLD.h);
+
+ ctx.fillStyle=doorOpen?"#31d48e":"#913d43";
+ ctx.fillRect(EXIT_X-70,15,140,25);
+
+ ctx.fillStyle="white";
+ ctx.font="bold 17px monospace";
+ ctx.fillText(doorOpen?"AÇIK":"KİLİTLİ",EXIT_X-50,60);
+}
+
+function drawObstacles(){
+
+ for(const o of obstacles){
+
+  ctx.fillStyle="#17231f";
+  ctx.fillRect(o.x+8,o.y+8,o.w,o.h);
+
+  ctx.fillStyle="#59655e";
+  ctx.fillRect(o.x,o.y,o.w,o.h);
+
+  ctx.fillStyle="#819087";
+  ctx.fillRect(o.x,o.y,o.w,8);
+ }
+}
+
+function drawPlayer(){
+
+ const x=player.x;
+ const y=player.y;
+
+ ctx.fillStyle="#0008";
+ ctx.beginPath();
+ ctx.ellipse(x,y+17,15,7,0,0,Math.PI*2);
+ ctx.fill();
+
+ ctx.fillStyle="#d7ad82";
+ ctx.fillRect(x-9,y-12,18,18);
+
+ ctx.fillStyle="#315b9a";
+ ctx.fillRect(x-11,y+5,22,15);
+
+ ctx.fillStyle="#171b22";
+ ctx.fillRect(x-9,y+19,7,7);
+ ctx.fillRect(x+3,y+19,7,7);
+
+ ctx.fillStyle="#171717";
+ ctx.fillRect(x-6,y-7,4,3);
+ ctx.fillRect(x+3,y-7,4,3);
+}
+
+function drawKeys(){
+
+ for(const k of items){
+
+  const pulse=Math.sin(
+   performance.now()/220+k.phase
+  )*3;
+
+  ctx.save();
+  ctx.translate(k.x,k.y);
+
+  ctx.shadowColor="#ffdf50";
+  ctx.shadowBlur=18;
+
+  ctx.fillStyle="#ffdc48";
+
+  ctx.beginPath();
+  ctx.arc(0,0,9+pulse/3,0,Math.PI*2);
+  ctx.fill();
+
+  ctx.fillRect(6,-3,18,6);
+  ctx.fillRect(18,0,4,7);
+
+  ctx.restore();
+ }
+}
+
+function drawGhosts(){
+
+ for(const g of ghosts){
+
+  const bob=Math.sin(
+   performance.now()/180+g.phase
+  )*3;
+
+  ctx.save();
+  ctx.translate(g.x,g.y+bob);
+
+  ctx.shadowColor="#51caff";
+  ctx.shadowBlur=18;
+
+  ctx.fillStyle="#6bc5e6";
+
+  ctx.beginPath();
+  ctx.arc(0,-4,18,Math.PI,0);
+  ctx.lineTo(18,13);
+  ctx.lineTo(9,8);
+  ctx.lineTo(0,15);
+  ctx.lineTo(-9,8);
+  ctx.lineTo(-18,13);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.shadowBlur=0;
+  ctx.fillStyle="#14212b";
+
+  ctx.fillRect(-9,-7,5,7);
+  ctx.fillRect(4,-7,5,7);
+
+  ctx.restore();
+ }
+}
+
+function drawMiniMap(){
+
+ const mw=mapCanvas.clientWidth;
+ const mh=mapCanvas.clientHeight;
+
+ mapCtx.setTransform(dpr,0,0,dpr,0,0);
+
+ mapCtx.clearRect(0,0,mw,mh);
+
+ const sx=mw/WORLD.w;
+ const sy=mh/WORLD.h;
+
+ mapCtx.fillStyle="#26392e";
+ mapCtx.fillRect(0,0,mw,mh);
+
+ mapCtx.strokeStyle="#ffffff12";
+ mapCtx.lineWidth=0.5;
+
+ for(let x=0;x<mw;x+=mw/10){
+  mapCtx.beginPath();
+  mapCtx.moveTo(x,0);
+  mapCtx.lineTo(x,mh);
+  mapCtx.stroke();
+ }
+
+ for(let y=0;y<mh;y+=mh/8){
+  mapCtx.beginPath();
+  mapCtx.moveTo(0,y);
+  mapCtx.lineTo(mw,y);
+  mapCtx.stroke();
+ }
+
+ // Engeller
+ for(const o of obstacles){
+  mapCtx.fillStyle="#78877d";
+  mapCtx.fillRect(
+   o.x*sx,o.y*sy,
+   Math.max(1,o.w*sx),
+   Math.max(1,o.h*sy)
+  );
+ }
+
+ // Çıkış
+ mapCtx.fillStyle=doorOpen?"#31d48e":"#913d43";
+ mapCtx.fillRect(
+  (EXIT_X-70)*sx,
+  0,
+  140*sx,
+  Math.max(3,25*sy)
+ );
+
+ // Yalnızca sıradaki anahtar gösterilir.
+ for(const k of items){
+  mapCtx.fillStyle="#ffdc48";
+  mapCtx.beginPath();
+  mapCtx.arc(
+   k.x*sx,
+   k.y*sy,
+   2.5,
+   0,
+   Math.PI*2
+  );
+  mapCtx.fill();
+ }
+
+ // Hayaletler
+ for(const g of ghosts){
+  mapCtx.fillStyle="#ff5555";
+  mapCtx.beginPath();
+  mapCtx.arc(
+   g.x*sx,
+   g.y*sy,
+   3.5,
+   0,
+   Math.PI*2
+  );
+  mapCtx.fill();
+ }
+
+ // Oyuncu
+ if(player){
+  mapCtx.fillStyle="#36bfff";
+  mapCtx.beginPath();
+  mapCtx.arc(
+   player.x*sx,
+   player.y*sy,
+   5,
+   0,
+   Math.PI*2
+  );
+  mapCtx.fill();
+
+  mapCtx.strokeStyle="white";
+  mapCtx.lineWidth=1.5;
+  mapCtx.stroke();
+ }
+
+ mapCtx.strokeStyle="#a3b7ad";
+ mapCtx.lineWidth=1;
+ mapCtx.strokeRect(0,0,mw,mh);
+}
+
+function render(){
+
+ ctx.setTransform(dpr,0,0,dpr,0,0);
+
+ ctx.fillStyle="#101820";
+ ctx.fillRect(0,0,W,H);
+
+ ctx.save();
+ ctx.translate(-camera.x,-camera.y);
+
+ drawWorld();
+ drawObstacles();
+ drawKeys();
+ drawGhosts();
+ drawPlayer();
+
+ ctx.restore();
+
+ const grad=ctx.createRadialGradient(
+  W/2,H/2,70,
+  W/2,H/2,Math.max(W,H)*.75
+ );
+
+ grad.addColorStop(0,"transparent");
+ grad.addColorStop(1,"#0009");
+
+ ctx.fillStyle=grad;
+ ctx.fillRect(0,0,W,H);
+
+ drawMiniMap();
+}
+
+function loop(now){
+
+ if(!playing)return;
+
+ const dt=Math.min((now-last)/1000,.04);
+ last=now;
+
+ update(dt);
+ render();
+
+ if(playing){
+  requestAnimationFrame(loop);
+ }
+}
+
+// KLAVYE
+addEventListener("keydown",e=>{
+
+ const k=e.key.toLowerCase();
+
+ if([
+  "arrowup","arrowdown",
+  "arrowleft","arrowright"," "
+ ].includes(k)){
+  e.preventDefault();
+ }
+
+ keyboard[k]=true;
+});
+
+addEventListener("keyup",e=>{
+ keyboard[e.key.toLowerCase()]=false;
+});
+
+// TELEFON KONTROLLERİ
+document.querySelectorAll(".ctrl").forEach(btn=>{
+
+ const dir=btn.dataset.dir;
+
+ btn.addEventListener("pointerdown",e=>{
+
+  e.preventDefault();
+
+  controls[dir]=true;
+  btn.classList.add("active");
+
+  try{
+   btn.setPointerCapture(e.pointerId);
+  }catch(err){}
+ });
+
+ function release(){
+  controls[dir]=false;
+  btn.classList.remove("active");
+ }
+
+ btn.addEventListener("pointerup",release);
+ btn.addEventListener("pointercancel",release);
+ btn.addEventListener("lostpointercapture",release);
+});
+
+document.addEventListener("visibilitychange",()=>{
+ if(document.hidden)resetControls();
+});
+
+</script>
+</body>
+  </html>
